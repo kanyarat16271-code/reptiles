@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>เจาะดาววิทยาศาสตร์ ม.ต้น - สิ่งมีชีวิต</title>
+    <!-- MediaPipe Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Prompt', sans-serif; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background: #0f172a; color: #fff; }
+        
+        #game-container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+        video { position: absolute; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.3; }
+        canvas { position: absolute; width: 100%; height: 100%; }
+        
+        .ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 20px; z-index: 5; }
+        .hud { display: flex; justify-content: space-between; align-items: center; font-size: 26px; font-weight: bold; background: rgba(0,0,0,0.65); padding: 15px 30px; border-radius: 50px; backdrop-filter: blur(10px); border: 2px solid rgba(255,255,255,0.2); }
+        .combo-badge { color: #FFD700; font-size: 28px; text-shadow: 0 0 10px #FF8C00; }
+        
+        .modal { position: absolute; z-index: 10; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(12px); display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; }
+        .btn { pointer-events: auto; background: linear-gradient(135deg, #FFD700, #FF8C00); border: none; padding: 18px 45px; font-size: 28px; font-weight: bold; color: #000; border-radius: 50px; cursor: pointer; box-shadow: 0 10px 25px rgba(255, 215, 0, 0.4); transition: transform 0.2s; }
+        .btn:hover { transform: scale(1.05); }
+        .hidden { display: none !important; }
+        
+        /* Floating Text Effects (-3s / Combo) */
+        .float-text { position: absolute; font-weight: bold; font-size: 32px; pointer-events: none; animation: floatUp 0.8s ease-out forwards; z-index: 6; }
+        @keyframes floatUp {
+            0% { opacity: 1; transform: translateY(0) scale(1); }
+            100% { opacity: 0; transform: translateY(-50px) scale(1.3); }
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <video id="webcam" playsinline></video>
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="ui-layer">
+        <div class="hud">
+            <div>⏱️ เวลา: <span id="timer">60</span>s</div>
+            <div class="combo-badge">🔥 Combo: <span id="combo">0</span></div>
+            <div>🎯 คะแนน: <span id="score">0</span></div>
+        </div>
+    </div>
+
+    <div id="start-screen" class="modal">
+        <h1 style="font-size: 42px; color: #FFD700; margin-bottom: 10px;">🌟 เกมเจาะดาววิทยาศาสตร์ (ม.ต้น)</h1>
+        <p style="font-size: 20px; margin-bottom: 15px;">ใช้นิ้วชี้แตะเฉพาะดาวที่เป็น <strong style="color: #4ADE80;">"สิ่งมีชีวิต"</strong></p>
+        <div style="background: rgba(255,255,255,0.1); padding: 15px 25px; border-radius: 15px; margin-bottom: 25px; text-align: left; font-size: 16px;">
+            ⚠️ <strong>กติกาใหม่ (เน้นความแม่นยำ):</strong><br>
+            • เจาะถูก: <strong>+10 คะแนน</strong> (Combo ทุก 3 ครั้ง Bonus +10)<br>
+            • เจาะผิด: <strong>-10 คะแนน และ หักเวลา -3 วินาที!</strong>
+        </div>
+        <button class="btn" onclick="startGame()">เริ่มเล่นเกม</button>
+        <p id="cam-status" style="margin-top: 15px; color: #F87171; font-size: 15px;"></p>
+    </div>
+
+    <div id="result-screen" class="modal hidden">
+        <h1 style="font-size: 40px; margin-bottom: 10px;">หมดเวลา!</h1>
+        <div id="badge" style="font-size: 80px; margin: 10px 0;">🥉</div>
+        <h2 id="rank-text" style="font-size: 28px; color: #FFD700; margin-bottom: 15px;">ระดับ: พอใช้</h2>
+        <p id="final-score" style="font-size: 26px; margin-bottom: 25px;">คะแนนรวม: 0</p>
+        <button class="btn" onclick="restartGame()">เล่นอีกครั้ง</button>
+    </div>
+</div>
+
+<script>
+// ชุดคำศัพท์ ม.ต้น
+const LIVING_THINGS = ['ไฮดรา', 'พารามีเซียม', 'อะมีบา', 'แบคทีเรีย', 'ยีสต์', 'ฟองน้ำทะเล', 'กัลปังหา', 'กาฝาก', 'พยาธิใบไม้', 'ดาวทะเล'];
+const NON_LIVING_THINGS = ['ไวรัส', 'ไวรอยด์', 'DNA', 'เอนไซม์', 'เกล็ดสโนว์', 'เปลือกหอย', 'ก้อนเมฆ', 'หุ่นยนต์ AI', 'หินปูน', 'ไฟป่า'];
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(type) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    
+    if (type === 'hit') {
+        osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+    } else if (type === 'combo') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); // C5
+        osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.08); // E5
+        osc.frequency.setValueAtTime(783.99, audioCtx.currentTime + 0.16); // G5
+        gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+    } else { // miss
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(250, audioCtx.currentTime);
+        osc.frequency.linearRampToValueAtTime(80, audioCtx.currentTime + 0.25);
+        gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.25);
+    }
+}
+
+let score = 0, timeLeft = 60, combo = 0, gameInterval, spawnInterval, isPlaying = false;
+let indexFingerPos = null, stars = [], particles = [];
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const video = document.getElementById('webcam');
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+class Star {
+    constructor() {
+        this.radius = 42; // ปรับขนาดให้เล็กลงเล็กน้อยเพื่อความแม่นยำ
+        this.x = Math.random() * (canvas.width - this.radius * 2) + this.radius;
+        this.y = canvas.height + this.radius;
+        this.speed = Math.random() * 2.5 + 3.5; // ปรับความเร็วเพิ่มขึ้นสำหรับ ม.ต้น
+        this.isLiving = Math.random() < 0.5;
+        const pool = this.isLiving ? LIVING_THINGS : NON_LIVING_THINGS;
+        this.text = pool[Math.floor(Math.random() * pool.length)];
+    }
+
+    update() { this.y -= this.speed; }
+
+    draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        
+        ctx.beginPath();
+        ctx.fillStyle = '#FFD700';
+        ctx.shadowColor = '#FFA500';
+        ctx.shadowBlur = 10;
+        for (let i = 0; i < 5; i++) {
+            ctx.lineTo(Math.cos((18 + i * 72) * Math.PI / 180) * this.radius,
+                       -Math.sin((18 + i * 72) * Math.PI / 180) * this.radius);
+            ctx.lineTo(Math.cos((54 + i * 72) * Math.PI / 180) * (this.radius/2),
+                       -Math.sin((54 + i * 72) * Math.PI / 180) * (this.radius/2));
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#000000';
+        ctx.font = 'bold 20px "Prompt", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(this.text, 0, 0);
+        
+        ctx.restore();
+    }
+}
+
+// MediaPipe Setup
+const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+hands.onResults((results) => {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const lm = results.multiHandLandmarks[0][8];
+        indexFingerPos = {
+            x: (1 - lm.x) * canvas.width,
+            y: lm.y * canvas.height
+        };
+    } else {
+        indexFingerPos = null;
+    }
+});
+
+const camera = new Camera(video, {
+    onFrame: async () => { await hands.send({ image: video }); },
+    width: 1280, height: 720
+});
+
+camera.start().catch(() => {
+    document.getElementById('cam-status').innerText = '⚠️ กรุณากดอนุญาตการใช้งานกล้องบนเบราว์เซอร์';
+});
+
+function showFloatingText(text, x, y, color) {
+    const el = document.createElement('div');
+    el.className = 'float-text';
+    el.innerText = text;
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.color = color;
+    document.getElementById('game-container').appendChild(el);
+    setTimeout(() => el.remove(), 800);
+}
+
+function startGame() {
+    document.getElementById('start-screen').classList.add('hidden');
+    document.getElementById('result-screen').classList.add('hidden');
+    score = 0; timeLeft = 60; combo = 0; stars = []; particles = [];
+    document.getElementById('score').innerText = score;
+    document.getElementById('timer').innerText = timeLeft;
+    document.getElementById('combo').innerText = combo;
+    isPlaying = true;
+
+    gameInterval = setInterval(() => {
+        timeLeft--;
+        document.getElementById('timer').innerText = timeLeft;
+        if (timeLeft <= 0) endGame();
+    }, 1000);
+
+    spawnInterval = setInterval(() => {
+        if (isPlaying && stars.length < 8) stars.push(new Star());
+    }, 1100);
+
+    requestAnimationFrame(gameLoop);
+}
+
+function createParticles(x, y, color) {
+    for (let i = 0; i < 10; i++) {
+        particles.push({
+            x, y,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6,
+            radius: Math.random() * 4 + 2,
+            alpha: 1, color
+        });
+    }
+}
+
+function gameLoop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (isPlaying) {
+        for (let i = stars.length - 1; i >= 0; i--) {
+            let s = stars[i];
+            s.update();
+            s.draw();
+
+            if (indexFingerPos) {
+                let dist = Math.hypot(indexFingerPos.x - s.x, indexFingerPos.y - s.y);
+                if (dist < s.radius + 20) {
+                    if (s.isLiving) {
+                        score += 10;
+                        combo++;
+                        
+                        // Combo Bonus Every 3 Hits
+                        if (combo % 3 === 0) {
+                            score += 10;
+                            playSound('combo');
+                            showFloatingText(`🔥 COMBO x${combo}! (+10)`, s.x, s.y, '#FFD700');
+                        } else {
+                            playSound('hit');
+                            showFloatingText('+10', s.x, s.y, '#4ADE80');
+                        }
+                        createParticles(s.x, s.y, '#4ADE80');
+                    } else {
+                        score = Math.max(0, score - 10);
+                        timeLeft = Math.max(0, timeLeft - 3); // หักเวลา -3s
+                        combo = 0; // Reset Combo
+                        
+                        playSound('miss');
+                        showFloatingText('-10 คะแนน! (-3s)', s.x, s.y, '#EF4444');
+                        createParticles(s.x, s.y, '#EF4444');
+                    }
+                    
+                    document.getElementById('score').innerText = score;
+                    document.getElementById('combo').innerText = combo;
+                    document.getElementById('timer').innerText = timeLeft;
+                    
+                    stars.splice(i, 1);
+                    if (timeLeft <= 0) endGame();
+                    continue;
+                }
+            }
+
+            if (s.y < -s.radius) stars.splice(i, 1);
+        }
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.x += p.vx; p.y += p.vy; p.alpha -= 0.04;
+            if (p.alpha <= 0) { particles.splice(i, 1); continue; }
+            ctx.save();
+            ctx.globalAlpha = p.alpha;
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+
+        if (indexFingerPos) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(indexFingerPos.x, indexFingerPos.y, 20, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.4)';
+            ctx.strokeStyle = '#38BDF8';
+            ctx.lineWidth = 3;
+            ctx.shadowColor = '#0EA5E9';
+            ctx.shadowBlur = 12;
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        requestAnimationFrame(gameLoop);
+    }
+}
+
+function endGame() {
+    isPlaying = false;
+    clearInterval(gameInterval);
+    clearInterval(spawnInterval);
+
+    document.getElementById('final-score').innerText = `คะแนนรวม: ${score}`;
+    
+    // เกณฑ์การประเมิน ม.ต้น
+    let badge = '🥉', rankText = 'ระดับ: พอใช้ (ต้องกลับไปทบทวนคำศัพท์ชีววิทยา!)';
+    if (score >= 150) { 
+        badge = '🥇'; 
+        rankText = 'ระดับ: ยอดเยี่ยม! (เซียนชีววิทยาตัวจริง)'; 
+    } else if (score >= 90) { 
+        badge = '🥈'; 
+        rankText = 'ระดับ: ดีมาก! (แยกแยะสิ่งมีชีวิตได้ดี)'; 
+    }
+
+    document.getElementById('badge').innerText = badge;
+    document.getElementById('rank-text').innerText = rankText;
+    document.getElementById('result-screen').classList.remove('hidden');
+}
+
+function restartGame() { startGame(); }
+</script>
+</body>
+</html>
